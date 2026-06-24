@@ -9,18 +9,22 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.OptionalLong;
 
 public class DiskMessageLog {
 
     // Each record on disk looks like:
     // [8 bytes offset][8 bytes timestamp][4 bytes payload length][N bytes payload]
     private static final int HEADER_SIZE = 8 + 8 + 4; // 20 bytes
+    private static final int INDEX_INTERVAL = 100;
 
     private final File logFile;
+    private final SparseIndex sparseIndex;
     private long nextOffset = 0;
 
     public DiskMessageLog(String directory, String topicName, int partitionId) throws IOException {
@@ -43,6 +47,7 @@ public class DiskMessageLog {
         }
 
         this.logFile = new File(dir, topicName + "-" + partitionId + ".log");
+        this.sparseIndex = new SparseIndex(directory, topicName, partitionId);
 
         // If file already exists, count existing entries so we continue from the right offset
         if (logFile.exists()) {
@@ -61,6 +66,7 @@ public class DiskMessageLog {
 
         long offset = nextOffset;
         long timestamp = System.currentTimeMillis();
+        long bytePosition = logFile.exists() ? logFile.length() : 0;
 
         // Allocate a buffer: header + payload
         ByteBuffer buffer = ByteBuffer.allocate(HEADER_SIZE + payload.length);
@@ -73,6 +79,10 @@ public class DiskMessageLog {
         try (FileOutputStream fos = new FileOutputStream(logFile, true)) {
             fos.write(buffer.array());
             fos.getFD().sync();
+        }
+
+        if (offset % INDEX_INTERVAL == 0) {
+            sparseIndex.add(offset, bytePosition);
         }
 
         nextOffset++;
@@ -90,17 +100,18 @@ public class DiskMessageLog {
         if (maxEntries > Protocol.MAX_FETCH_ENTRIES) {
             throw new IllegalArgumentException("Max entries is too large: " + maxEntries);
         }
-        if (!logFile.exists() || maxEntries == 0) {
+        if (!logFile.exists() || maxEntries == 0 || fromOffset >= nextOffset) {
             return Collections.emptyList();
         }
 
         List<LogEntry> result = new ArrayList<>();
+        long startPosition = findStartPosition(fromOffset);
 
-        try (DataInputStream dis = new DataInputStream(
-                new BufferedInputStream(new FileInputStream(logFile)))) {
+        try (RandomAccessFile raf = new RandomAccessFile(logFile, "r")) {
+            raf.seek(startPosition);
 
             while (result.size() < maxEntries) {
-                LogEntry entry = readEntry(dis);
+                LogEntry entry = readEntry(raf);
                 if (entry == null) {
                     break;
                 }
@@ -131,6 +142,11 @@ public class DiskMessageLog {
         return count;
     }
 
+    private long findStartPosition(long fromOffset) {
+        OptionalLong indexedPosition = sparseIndex.floorPosition(fromOffset);
+        return indexedPosition.orElse(0L);
+    }
+
     private LogEntry readEntry(DataInputStream dis) throws IOException {
         byte[] header = new byte[HEADER_SIZE];
         try {
@@ -151,6 +167,33 @@ public class DiskMessageLog {
         byte[] payload = new byte[length];
         try {
             dis.readFully(payload);
+        } catch (EOFException e) {
+            return null;
+        }
+
+        return new LogEntry(offset, timestamp, payload);
+    }
+
+    private LogEntry readEntry(RandomAccessFile raf) throws IOException {
+        byte[] header = new byte[HEADER_SIZE];
+        try {
+            raf.readFully(header);
+        } catch (EOFException e) {
+            return null;
+        }
+
+        ByteBuffer buf = ByteBuffer.wrap(header);
+        long offset = buf.getLong();
+        long timestamp = buf.getLong();
+        int length = buf.getInt();
+
+        if (length < 0 || length > Protocol.MAX_PAYLOAD_BYTES) {
+            throw new IOException("Corrupted log record payload length: " + length);
+        }
+
+        byte[] payload = new byte[length];
+        try {
+            raf.readFully(payload);
         } catch (EOFException e) {
             return null;
         }
