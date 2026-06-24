@@ -1,6 +1,7 @@
 package dev.ayan.server;
 
 import dev.ayan.Protocol;
+import dev.ayan.broker.ConsumerGroupManager;
 import dev.ayan.broker.Topic;
 
 import java.io.DataInputStream;
@@ -9,6 +10,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,7 +19,10 @@ public class BrokerServer {
 
     private final int port;
     private final Map<String, Topic> topics = new ConcurrentHashMap<>();
+    private final ConsumerGroupManager consumerGroupManager = new ConsumerGroupManager();
     private final String dataDirectory;
+    private volatile boolean running;
+    private volatile ServerSocket serverSocket;
 
     public BrokerServer(int port, String dataDirectory) {
         if (port <= 0 || port > 65_535) {
@@ -52,20 +57,41 @@ public class BrokerServer {
 
     // Start listening for connections
     public void start() throws IOException {
-        try (ServerSocket serverSocket = new ServerSocket(port)) {
+        running = true;
+        try (ServerSocket openedServerSocket = new ServerSocket(port)) {
+            serverSocket = openedServerSocket;
             System.out.println("[Broker] Listening on port " + port);
 
-            // Accept connections forever
-            while (true) {
-                Socket clientSocket = serverSocket.accept();
-                System.out.println("[Broker] Client connected: " +
-                        clientSocket.getInetAddress());
+            // Accept connections until the broker is stopped
+            while (running) {
+                try {
+                    Socket clientSocket = openedServerSocket.accept();
+                    System.out.println("[Broker] Client connected: " +
+                            clientSocket.getInetAddress());
 
-                // Handle each client in its own thread so multiple clients can connect
-                Thread clientThread = new Thread(() -> handleClient(clientSocket),
-                        "broker-client-" + clientSocket.getPort());
-                clientThread.start();
+                    // Handle each client in its own thread so multiple clients can connect
+                    Thread clientThread = new Thread(() -> handleClient(clientSocket),
+                            "broker-client-" + clientSocket.getPort());
+                    clientThread.start();
+                } catch (SocketException e) {
+                    if (running) {
+                        throw e;
+                    }
+                    break;
+                }
             }
+        } finally {
+            running = false;
+            serverSocket = null;
+            System.out.println("[Broker] Stopped.");
+        }
+    }
+
+    public void stop() throws IOException {
+        running = false;
+        ServerSocket socketToClose = serverSocket;
+        if (socketToClose != null && !socketToClose.isClosed()) {
+            socketToClose.close();
         }
     }
 
@@ -89,6 +115,10 @@ public class BrokerServer {
                     handleSend(in, out);
                 } else if (command == Protocol.CMD_FETCH) {
                     handleFetch(in, out);
+                } else if (command == Protocol.CMD_COMMIT_OFFSET) {
+                    handleCommitOffset(in, out);
+                } else if (command == Protocol.CMD_GET_OFFSET) {
+                    handleGetOffset(in, out);
                 } else {
                     System.out.println("[Broker] Unknown command: " + command);
                     out.writeByte(Protocol.RES_ERROR);
@@ -191,5 +221,78 @@ public class BrokerServer {
         byte[] topicNameBytes = new byte[topicNameLength];
         in.readFully(topicNameBytes);
         return new String(topicNameBytes, StandardCharsets.UTF_8);
+    }
+
+    // COMMIT_OFFSET request format:
+    // [1 byte cmd][2 bytes group length][N bytes group][2 bytes topic length][N bytes topic][4 bytes partition][8 bytes offset]
+    private void handleCommitOffset(DataInputStream in, DataOutputStream out) throws IOException {
+        String groupId = readGroupId(in);
+        String topicName = readTopicName(in);
+        int partitionId = in.readInt();
+        long offset = in.readLong();
+
+        if (partitionId < 0 || offset < 0) {
+            out.writeByte(Protocol.RES_ERROR);
+            out.flush();
+            return;
+        }
+
+        Topic topic = topics.get(topicName);
+        if (topic == null || partitionId >= topic.getPartitionCount()) {
+            out.writeByte(Protocol.RES_ERROR);
+            out.flush();
+            return;
+        }
+
+        try {
+            consumerGroupManager.commitOffset(groupId, topicName, partitionId, offset);
+            out.writeByte(Protocol.RES_OK);
+            out.flush();
+        } catch (IllegalArgumentException e) {
+            out.writeByte(Protocol.RES_ERROR);
+            out.flush();
+        }
+    }
+
+    // GET_OFFSET request format:
+    // [1 byte cmd][2 bytes group length][N bytes group][2 bytes topic length][N bytes topic][4 bytes partition]
+    private void handleGetOffset(DataInputStream in, DataOutputStream out) throws IOException {
+        String groupId = readGroupId(in);
+        String topicName = readTopicName(in);
+        int partitionId = in.readInt();
+
+        if (partitionId < 0) {
+            out.writeByte(Protocol.RES_ERROR);
+            out.flush();
+            return;
+        }
+
+        Topic topic = topics.get(topicName);
+        if (topic == null || partitionId >= topic.getPartitionCount()) {
+            out.writeByte(Protocol.RES_ERROR);
+            out.flush();
+            return;
+        }
+
+        try {
+            long committedOffset = consumerGroupManager.getCommittedOffset(groupId, topicName, partitionId);
+            out.writeByte(Protocol.RES_OK);
+            out.writeLong(committedOffset);
+            out.flush();
+        } catch (IllegalArgumentException e) {
+            out.writeByte(Protocol.RES_ERROR);
+            out.flush();
+        }
+    }
+
+    private String readGroupId(DataInputStream in) throws IOException {
+        int groupIdLength = Short.toUnsignedInt(in.readShort());
+        if (groupIdLength == 0 || groupIdLength > Protocol.MAX_GROUP_ID_BYTES) {
+            throw new IOException("Invalid group id length: " + groupIdLength);
+        }
+
+        byte[] groupIdBytes = new byte[groupIdLength];
+        in.readFully(groupIdBytes);
+        return new String(groupIdBytes, StandardCharsets.UTF_8);
     }
 }

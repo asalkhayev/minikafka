@@ -11,6 +11,8 @@ public interface Protocol {
     // Client commands
     byte CMD_SEND = 1;
     byte CMD_FETCH = 2;
+    byte CMD_COMMIT_OFFSET = 3;
+    byte CMD_GET_OFFSET = 4;
 
     // Broker response codes
     byte RES_OK = 0;
@@ -18,6 +20,7 @@ public interface Protocol {
 
     // Safety limits for request validation
     int MAX_TOPIC_NAME_BYTES = 255;
+    int MAX_GROUP_ID_BYTES = 255;
     int MAX_PAYLOAD_BYTES = 1024 * 1024; // 1 MiB
     int MAX_FETCH_ENTRIES = 10_000;
 }

@@ -1,6 +1,6 @@
 package dev.ayan;
 
-import dev.ayan.client.Consumer;
+import dev.ayan.client.GroupConsumer;
 import dev.ayan.client.Producer;
 import dev.ayan.server.BrokerServer;
 
@@ -28,24 +28,35 @@ public class Main {
         // Give broker a moment to start
         Thread.sleep(500);
 
-        // Producer and consumer communicate with the broker over TCP
-        try (
-                Producer producer = new Producer("localhost", 9092);
-                Consumer consumer = new Consumer("localhost", 9092, "payments", 0)
-        ) {
+        // Producer and group consumers communicate with the broker over TCP
+        try (Producer producer = new Producer("localhost", 9092)) {
             producer.send("payments", "payment:user1:50USD", 0);
             producer.send("payments", "payment:user2:30USD", 0);
             producer.send("payments", "payment:user3:100USD", 0);
-
-            System.out.println("\n--- Poll 1 ---");
-            consumer.poll(2);
-
             producer.send("payments", "payment:user4:20USD", 0);
             producer.send("payments", "payment:user5:75USD", 0);
-
-            System.out.println("\n--- Poll 2 ---");
-            consumer.poll(10);
         }
+
+        System.out.println("\n--- Group consumer instance 1: poll first 2 and commit ---");
+        try (GroupConsumer consumer1 = new GroupConsumer("localhost", 9092, "payments-service", "payments", 0)) {
+            consumer1.poll(2);
+            consumer1.commit();
+        }
+
+        System.out.println("\n--- Group consumer instance 2: resumes from committed offset ---");
+        try (GroupConsumer consumer2 = new GroupConsumer("localhost", 9092, "payments-service", "payments", 0)) {
+            consumer2.poll(10);
+            consumer2.commit();
+        }
+
+        System.out.println("\n--- Different group: starts from offset 0 ---");
+        try (GroupConsumer auditConsumer = new GroupConsumer("localhost", 9092, "audit-service", "payments", 0)) {
+            auditConsumer.poll(10);
+            auditConsumer.commit();
+        }
+
+        broker.stop();
+        brokerThread.join(1000);
     }
     private static void clearDirectory(File directory) {
         if (!directory.exists()) {
