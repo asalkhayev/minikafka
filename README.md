@@ -229,6 +229,8 @@ For each entry:
 src/main/java/dev/ayan
 ├── Main.java
 ├── Protocol.java
+├── benchmark
+│   └── ProducerBenchmark.java
 ├── broker
 │   ├── ConsumerGroupManager.java
 │   ├── Partition.java
@@ -279,6 +281,40 @@ mvn exec:java
 ```
 
 The demo starts a broker, creates a `payments` topic, sends messages through a producer, reads them through consumer groups, commits offsets, and shows that another consumer in the same group resumes from the committed offset.
+
+### Run tests
+
+```bash
+mvn test
+```
+
+Current test coverage includes disk log storage, sparse index lookup, and consumer group offset management.
+
+```text
+Tests run: 23, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
+
+### Run producer benchmark
+
+The benchmark starts an embedded broker, sends 10,000 messages through the TCP producer, and prints throughput and average latency.
+
+Run `ProducerBenchmark` from IntelliJ:
+
+```text
+src/main/java/dev/ayan/benchmark/ProducerBenchmark.java
+```
+
+Example local result:
+
+```text
+=== Producer Benchmark ===
+Messages: 10000
+Payload size: 100 bytes
+Elapsed time: 0.699 seconds
+Throughput: 14304.78 messages/second
+Average latency: 0.0699 ms/message
+```
 
 ---
 
@@ -347,10 +383,10 @@ These are possible future improvements.
 - Add log segments instead of one file per partition
 - Add multiple partitions with producer-side partition selection
 - Add a command-line interface
-- Add JUnit tests for log storage and protocol behavior
+- Add protocol-level integration tests
 - Add replication between brokers
 - Persist consumer group offsets to disk
-- Add benchmarks for sparse-index reads
+- Add consumer and sparse-index read benchmarks
 
 ---
 

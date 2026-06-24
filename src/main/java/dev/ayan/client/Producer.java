@@ -15,8 +15,13 @@ public class Producer implements AutoCloseable {
     private final Socket socket;
     private final DataInputStream in;
     private final DataOutputStream out;
+    private final boolean loggingEnabled;
 
     public Producer(String host, int port) throws IOException {
+        this(host, port, true);
+    }
+
+    public Producer(String host, int port, boolean loggingEnabled) throws IOException {
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("Host must not be empty");
         }
@@ -26,6 +31,7 @@ public class Producer implements AutoCloseable {
 
         this.host = host;
         this.port = port;
+        this.loggingEnabled = loggingEnabled;
         this.socket = new Socket(host, port);
         this.in = new DataInputStream(socket.getInputStream());
         this.out = new DataOutputStream(socket.getOutputStream());
@@ -57,8 +63,10 @@ public class Producer implements AutoCloseable {
         }
 
         long offset = in.readLong();
-        System.out.println("[Producer] Sent " + payload.length + " byte(s) to " +
-                topicName + "-" + partitionId + " at offset " + offset);
+        if (loggingEnabled) {
+            System.out.println("[Producer] Sent " + payload.length + " byte(s) to " +
+                    topicName + "-" + partitionId + " at offset " + offset);
+        }
         return offset;
     }
 
