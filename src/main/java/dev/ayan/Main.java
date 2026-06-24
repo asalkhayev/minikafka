@@ -1,30 +1,39 @@
 package dev.ayan;
 
-import dev.ayan.broker.Topic;
-import dev.ayan.client.Consumer;
-import dev.ayan.client.Producer;
+import dev.ayan.client.NetworkConsumer;
+import dev.ayan.client.NetworkProducer;
+import dev.ayan.server.BrokerServer;
 
 public class Main {
     public static void main(String[] args) throws Exception {
-        // Messages will be stored in a "data" folder inside your project
-        String dataDir = "data";
+        // Start broker in background thread
+        BrokerServer broker = new BrokerServer(9092, "data");
+        broker.createTopic("payments", 1);
+        Thread brokerThread = new Thread(() -> {
+            try { broker.start(); }
+            catch (Exception e) { e.printStackTrace(); }
+        });
+        brokerThread.setDaemon(true);
+        brokerThread.start();
 
-        Topic topic = new Topic("payments", 1, dataDir);
-        Producer producer = new Producer(topic);
-        Consumer consumer = new Consumer(topic, 0);
+        // Give broker a moment to start
+        Thread.sleep(500);
 
-        producer.send("payment:user1:50USD", 0);
-        producer.send("payment:user2:30USD", 0);
-        producer.send("payment:user3:100USD", 0);
+        // Producer sends over TCP
+        NetworkProducer producer = new NetworkProducer("localhost", 9092);
+        producer.send("payments", 0, "payment:user1:50USD");
+        producer.send("payments", 0, "payment:user2:30USD");
+        producer.send("payments", 0, "payment:user3:100USD");
 
-        System.out.println("\n--- Consumer polls first 2 ---");
+        // Consumer fetches over TCP
+        NetworkConsumer consumer = new NetworkConsumer("localhost", 9092, "payments", 0);
+        System.out.println("\n--- Poll 1 ---");
         consumer.poll(2);
 
-        System.out.println("\n--- Producer sends more ---");
-        producer.send("payment:user4:20USD", 0);
-        producer.send("payment:user5:75USD", 0);
+        producer.send("payments", 0, "payment:user4:20USD");
+        producer.send("payments", 0, "payment:user5:75USD");
 
-        System.out.println("\n--- Consumer polls again (continues from offset 2) ---");
+        System.out.println("\n--- Poll 2 ---");
         consumer.poll(10);
     }
 }
